@@ -1,0 +1,2196 @@
+                            <div class="metric-card">
+                                <div class="metric-value" id="avgRecoveryTime">0</div>
+                                <div class="metric-label">Avg Recovery (days)</div>
+                            </div>
+                        </div>
+
+                        <!-- Timeline Section -->
+                        <h4>📅 Intervention Timeline</h4>
+                        <div class="timeline" id="interventionTimeline">
+                            <!-- Timeline items will be added here -->
+                        </div>
+
+                        <div style="margin-top: 20px;">
+                            <button class="btn btn-primary" onclick="addTimelineEvent()">Add Progress Update</button>
+                            <button class="btn btn-success" onclick="markAsRecovered()">Mark as Recovered</button>
+                            <button class="btn btn-danger" onclick="markAsLost()">Mark as Lost</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <div id="rcaModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('rcaModal')">&times;</span>
+            <h2>🔍 RCA Meeting Guide</h2>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <div class="timeline-date">0-15 minutes</div>
+                    <h4>Situation Overview</h4>
+                    <p>Review current health score, trends, and timeline of decline</p>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">15-45 minutes</div>
+                    <h4>Contributing Factors Analysis</h4>
+                    <p>Analyze product issues, relationship factors, external and internal factors</p>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">45-60 minutes</div>
+                    <h4>Risk Assessment & Action Planning</h4>
+                    <p>Assess churn likelihood, develop action plan, assign ownership</p>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">60-70 minutes</div>
+                    <h4>Follow-up Planning</h4>
+                    <p>Set review cadence, success metrics, escalation triggers</p>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="closeModal('rcaModal')">Start Meeting</button>
+        </div>
+    </div>
+
+    <!-- Sync Status -->
+    <div id="syncStatus" class="sync-status">
+        <span id="syncText">🔄 Connecting...</span>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="notificationToast" class="notification">
+        <span id="notificationText">Action completed successfully!</span>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+
+    <script>
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyCBQF-5y5W_ucFRxSDwoiYneIVPGnkiXdg",
+            authDomain: "at-risk-d3f6c.firebaseapp.com",
+            databaseURL: "https://at-risk-d3f6c-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "at-risk-d3f6c",
+            storageBucket: "at-risk-d3f6c.firebasestorage.app",
+            messagingSenderId: "286406637944",
+            appId: "1:286406637944:web:e99f50c1e22221077b708d"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const database = firebase.database();
+        const clientsRef = database.ref('clients');
+
+        // Global variables
+        let currentClient = null;
+        let clients = {};
+        let clientsListener = null;
+        let actionItems = [];
+        let interventionMetrics = {
+            total: 0,
+            successful: 0,
+            avgDays: 0
+        };
+
+        // Client Management Functions
+        async function createNewClient() {
+            const name = document.getElementById('newClientName').value.trim();
+            if (!name) {
+                showNotification('Please enter a client name', 'error');
+                return;
+            }
+
+            const clientData = {
+                name: name,
+                healthScore: 7.0,
+                npsScore: 7,
+                engagement: 85,
+                riskLevel: 'moderate',
+                createdAt: firebase.database.ServerValue.TIMESTAMP,
+                lastUpdated: firebase.database.ServerValue.TIMESTAMP,
+                timeline: {},
+                actions: {},
+                communications: {},
+                rca: {}
+            };
+
+            try {
+                updateSyncStatus('syncing');
+                const newClientRef = clientsRef.push();
+                await newClientRef.set(clientData);
+                
+                document.getElementById('newClientName').value = '';
+                showNotification(`Client "${name}" created successfully!`);
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error creating client: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        function loadClients() {
+            if (clientsListener) {
+                clientsListener.off();
+            }
+
+            updateSyncStatus('syncing');
+            
+            clientsListener = clientsRef.on('value', (snapshot) => {
+                clients = snapshot.val() || {};
+                displayClients();
+                updateSyncStatus('online');
+                
+                // Update current client if it exists and was modified
+                if (currentClient && clients[currentClient.id]) {
+                    currentClient = { id: currentClient.id, ...clients[currentClient.id] };
+                    loadClientData();
+                }
+            }, (error) => {
+                showNotification('Error loading clients: ' + error.message, 'error');
+                updateSyncStatus('offline');
+            });
+        }
+
+        function displayClients() {
+            const container = document.getElementById('clientsList');
+            const clientsArray = Object.keys(clients).map(id => ({ id, ...clients[id] }));
+            
+            if (clientsArray.length === 0) {
+                container.innerHTML = '<div class="loading">No clients found. Create your first client above!</div>';
+                return;
+            }
+
+            // Sort by creation date (most recent first)
+            clientsArray.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+            container.innerHTML = '';
+            clientsArray.forEach(client => {
+                const riskClass = getRiskClass(client.healthScore || 7);
+                const clientCard = document.createElement('div');
+                clientCard.className = `client-card risk-card ${riskClass}`;
+                clientCard.onclick = () => selectClient(client);
+                
+                const lastUpdated = client.lastUpdated ? 
+                    new Date(client.lastUpdated).toLocaleDateString() : 
+                    'Recently';
+                
+                clientCard.innerHTML = `
+                    <div class="client-name">${client.name}</div>
+                    <div class="client-score ${riskClass}">${(client.healthScore || 7).toFixed(1)}</div>
+                    <div>Health Score</div>
+                    <div style="margin-top: 10px;">
+                        <small>NPS: ${client.npsScore || 7} | Engagement: ${client.engagement || 85}%</small>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <small>Last updated: ${lastUpdated}</small>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button class="btn btn-danger" onclick="deleteClient('${client.id}', event)" style="font-size: 0.8rem; padding: 5px 10px;">Delete</button>
+                    </div>
+                `;
+                container.appendChild(clientCard);
+            });
+        }
+
+        function selectClient(client) {
+            currentClient = client;
+            document.getElementById('selectedClientName').textContent = client.name;
+            
+            // Update sliders with client data
+            document.getElementById('healthSlider').value = client.healthScore || 7;
+            document.getElementById('npsSlider').value = client.npsScore || 7;
+            document.getElementById('engagementSlider').value = client.engagement || 85;
+            
+            updateRiskAssessment();
+            loadClientData();
+            showNotification(`Selected client: ${client.name}`);
+        }
+
+        async function deleteClient(clientId, event) {
+            event.stopPropagation();
+            
+            if (!confirm('Are you sure you want to delete this client? This action cannot be undone.')) {
+                return;
+            }
+
+            try {
+                updateSyncStatus('syncing');
+                await clientsRef.child(clientId).remove();
+                showNotification('Client deleted successfully');
+                
+                if (currentClient && currentClient.id === clientId) {
+                    currentClient = null;
+                    document.getElementById('selectedClientName').textContent = 'No client selected';
+                    clearClientData();
+                }
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error deleting client: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        // Data Management Functions
+        async function saveClientData() {
+            if (!currentClient) {
+                showNotification('Please select a client first', 'error');
+                return;
+            }
+
+            const updatedData = {
+                healthScore: parseFloat(document.getElementById('healthSlider').value),
+                npsScore: parseInt(document.getElementById('npsSlider').value),
+                engagement: parseInt(document.getElementById('engagementSlider').value),
+                riskLevel: currentClient.riskLevel,
+                lastUpdated: firebase.database.ServerValue.TIMESTAMP
+            };
+
+            try {
+                updateSyncStatus('syncing');
+                await clientsRef.child(currentClient.id).update(updatedData);
+                
+                showNotification('Client assessment saved successfully!');
+                addToTimeline('Assessment Updated', 'Risk assessment data updated');
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error saving data: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        async function saveRCAFindings() {
+            if (!currentClient) {
+                showNotification('Please select a client first', 'error');
+                return;
+            }
+
+            const category = document.getElementById('issueCategory').value;
+            const description = document.getElementById('issueDescription').value;
+            const factors = document.getElementById('contributingFactors').value;
+            const actionPlan = document.getElementById('rcaActionPlan').value;
+            const priority = document.getElementById('rcaPriority').value;
+
+            if (!category || !description) {
+                showNotification('Please fill in category and description', 'error');
+                return;
+            }
+
+            const rcaData = {
+                category,
+                description,
+                factors,
+                actionPlan,
+                priority,
+                status: 'open',
+                timestamp: firebase.database.ServerValue.TIMESTAMP
+            };
+
+            try {
+                updateSyncStatus('syncing');
+                const newRcaRef = clientsRef.child(currentClient.id).child('rca').push();
+                await newRcaRef.set(rcaData);
+
+                // Auto-generate action items based on RCA
+                if (actionPlan) {
+                    const actionData = {
+                        action: `RCA Follow-up: ${description.substring(0, 50)}...`,
+                        priority: priority,
+                        dueDate: getDateInDays(priority === 'high' ? 3 : priority === 'medium' ? 14 : 30),
+                        completed: false,
+                        rcaRelated: true,
+                        rcaId: newRcaRef.key,
+                        createdAt: firebase.database.ServerValue.TIMESTAMP
+                    };
+
+                    const newActionRef = clientsRef.child(currentClient.id).child('actions').push();
+                    await newActionRef.set(actionData);
+                }
+
+                showNotification('RCA findings saved and action plan generated!');
+                addToTimeline('RCA Completed', `Category: ${category} - Priority: ${priority}`, 'analysis');
+                
+                // Clear form
+                document.getElementById('issueCategory').value = '';
+                document.getElementById('issueDescription').value = '';
+                document.getElementById('contributingFactors').value = '';
+                document.getElementById('rcaActionPlan').value = '';
+                document.getElementById('rcaRecommendations').style.display = 'none';
+                
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error saving RCA: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        function showRCARecommendations() {
+            const category = document.getElementById('issueCategory').value;
+            const recommendationsDiv = document.getElementById('rcaRecommendations');
+            const categorySpan = document.getElementById('rcaCategory');
+            const actionsDiv = document.getElementById('rcaActionRecommendations');
+
+            if (!category) {
+                recommendationsDiv.style.display = 'none';
+                return;
+            }
+
+            categorySpan.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+            
+            const recommendations = {
+                product: [
+                    "Conduct detailed product usage analysis",
+                    "Review feature adoption and training needs",
+                    "Assess technical implementation issues",
+                    "Evaluate product-market fit for this client",
+                    "Schedule product roadmap alignment session"
+                ],
+                relationship: [
+                    "Audit all stakeholder communications",
+                    "Assess customer success team engagement",
+                    "Review escalation and response times", 
+                    "Evaluate executive relationship strength",
+                    "Plan relationship repair initiatives"
+                ],
+                external: [
+                    "Analyze competitive landscape changes",
+                    "Review client's industry challenges",
+                    "Assess economic factors impact",
+                    "Evaluate regulatory or compliance issues",
+                    "Monitor market condition effects"
+                ],
+                internal: [
+                    "Review internal process failures",
+                    "Assess team capacity and resources",
+                    "Evaluate communication breakdowns",
+                    "Review service delivery quality",
+                    "Analyze support response effectiveness"
+                ]
+            };
+
+            actionsDiv.innerHTML = '';
+            recommendations[category].forEach(action => {
+                const actionDiv = document.createElement('div');
+                actionDiv.innerHTML = `
+                    <div style="margin: 5px 0; padding: 8px; background: white; border-radius: 5px; border-left: 3px solid #667eea;">
+                        ✓ ${action}
+                    </div>
+                `;
+                actionsDiv.appendChild(actionDiv);
+            });
+
+            recommendationsDiv.style.display = 'block';
+        }
+
+        async function addCustomAction() {
+            if (!currentClient) {
+                showNotification('Please select a client first', 'error');
+                return;
+            }
+
+            const action = document.getElementById('customAction').value.trim();
+            const priority = document.getElementById('customPriority').value;
+            const dueDate = document.getElementById('customDueDate').value;
+
+            if (!action || !dueDate) {
+                showNotification('Please fill in action and due date', 'error');
+                return;
+            }
+
+            const actionData = {
+                action,
+                priority,
+                dueDate,
+                completed: false,
+                createdAt: firebase.database.ServerValue.TIMESTAMP
+            };
+
+            try {
+                updateSyncStatus('syncing');
+                const newActionRef = clientsRef.child(currentClient.id).child('actions').push();
+                await newActionRef.set(actionData);
+
+                showNotification('Action item added successfully!');
+                addToTimeline('Action Added', action, 'action');
+                
+                // Clear form
+                document.getElementById('customAction').value = '';
+                document.getElementById('customDueDate').value = getTomorrowDate();
+                
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error adding action: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        async function toggleActionComplete(actionId) {
+            if (!currentClient) return;
+
+            try {
+                updateSyncStatus('syncing');
+                
+                const actionRef = clientsRef.child(currentClient.id).child('actions').child(actionId);
+                const snapshot = await actionRef.once('value');
+                const actionData = snapshot.val();
+                
+                if (actionData) {
+                    const newCompletedStatus = !actionData.completed;
+                    await actionRef.update({
+                        completed: newCompletedStatus,
+                        completedDate: newCompletedStatus ? firebase.database.ServerValue.TIMESTAMP : null
+                    });
+
+                    if (newCompletedStatus) {
+                        addToTimeline('Action Completed', actionData.action, 'success');
+                        showNotification('Action marked as complete!');
+                    } else {
+                        showNotification('Action marked as pending');
+                    }
+                }
+                
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error updating action: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        async function logCommunication() {
+            if (!currentClient) {
+                showNotification('Please select a client first', 'error');
+                return;
+            }
+
+            const type = document.getElementById('commType').value;
+            const notes = document.getElementById('commNotes').value.trim();
+
+            if (!notes) {
+                showNotification('Please enter communication notes', 'error');
+                return;
+            }
+
+            const commData = {
+                type,
+                notes,
+                timestamp: firebase.database.ServerValue.TIMESTAMP
+            };
+
+            try {
+                updateSyncStatus('syncing');
+                const newCommRef = clientsRef.child(currentClient.id).child('communications').push();
+                await newCommRef.set(commData);
+
+                showNotification('Communication logged successfully!');
+                addToTimeline('Communication', `${type}: ${notes.substring(0, 50)}...`, 'communication');
+                
+                // Clear form
+                document.getElementById('commNotes').value = '';
+                
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error logging communication: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        async function addToTimeline(title, description, type = 'update') {
+            if (!currentClient) return;
+
+            const timelineData = {
+                title,
+                description,
+                type,
+                timestamp: firebase.database.ServerValue.TIMESTAMP
+            };
+
+            try {
+                const newTimelineRef = clientsRef.child(currentClient.id).child('timeline').push();
+                await newTimelineRef.set(timelineData);
+            } catch (error) {
+                console.error('Error adding to timeline:', error);
+            }
+        }
+
+        async function markRCAComplete(rcaId) {
+            if (!currentClient) return;
+
+            if (confirm('Mark this RCA as complete? This will close the follow-up tracking.')) {
+                try {
+                    updateSyncStatus('syncing');
+                    await clientsRef.child(currentClient.id).child('rca').child(rcaId).update({
+                        status: 'closed',
+                        completedDate: firebase.database.ServerValue.TIMESTAMP
+                    });
+
+                    const rcaItem = currentClient.rca && currentClient.rca.find ? 
+                        currentClient.rca.find(r => r.id === rcaId) : null;
+                    if (rcaItem) {
+                        addToTimeline('RCA Resolved', `${rcaItem.category}: ${rcaItem.description.substring(0, 50)}...`, 'success');
+                    }
+                    
+                    showNotification('RCA marked as complete!');
+                    updateSyncStatus('online');
+                } catch (error) {
+                    showNotification('Error updating RCA: ' + error.message, 'error');
+                    updateSyncStatus('online');
+                }
+            }
+        }
+
+        async function addRCAUpdate(rcaId) {
+            const update = prompt('Enter RCA progress update:');
+            if (!update) return;
+
+            const rcaItem = currentClient.rca && currentClient.rca.find ? 
+                currentClient.rca.find(r => r.id === rcaId) : null;
+            if (rcaItem) {
+                addToTimeline('RCA Update', `${rcaItem.category}: ${update}`, 'update');
+                showNotification('RCA update added to timeline!');
+            }
+        }
+
+        // UI Functions
+        function loadClientData() {
+            if (!currentClient) return;
+
+            // Set up real-time listeners for this client's data
+            setupClientListeners();
+        }
+
+        function setupClientListeners() {
+            if (!currentClient) return;
+
+            // Listen to actions
+            clientsRef.child(currentClient.id).child('actions').on('value', (snapshot) => {
+                const actions = snapshot.val() || {};
+                currentClient.actions = Object.keys(actions).map(id => ({ id, ...actions[id] }));
+                loadActionItems();
+            });
+
+            // Listen to communications
+            clientsRef.child(currentClient.id).child('communications').on('value', (snapshot) => {
+                const communications = snapshot.val() || {};
+                currentClient.communications = Object.keys(communications).map(id => ({ id, ...communications[id] }));
+                loadCommunicationHistory();
+            });
+
+            // Listen to timeline
+            clientsRef.child(currentClient.id).child('timeline').on('value', (snapshot) => {
+                const timeline = snapshot.val() || {};
+                currentClient.timeline = Object.keys(timeline).map(id => ({ id, ...timeline[id] }));
+                loadTimeline();
+            });
+
+            // Listen to RCA
+            clientsRef.child(currentClient.id).child('rca').on('value', (snapshot) => {
+                const rca = snapshot.val() || {};
+                currentClient.rca = Object.keys(rca).map(id => ({ id, ...rca[id] }));
+                loadRCAHistory();
+                loadRCAProgress();
+            });
+        }
+
+        function clearClientData() {
+            // Remove any existing listeners
+            if (currentClient) {
+                clientsRef.child(currentClient.id).off();
+            }
+
+            document.getElementById('actionItemsList').innerHTML = '';
+            document.getElementById('communicationHistory').innerHTML = '';
+            document.getElementById('interventionTimeline').innerHTML = '';
+            document.getElementById('rcaList').innerHTML = '';
+            document.getElementById('rcaActionsList').innerHTML = '';
+            
+            // Reset sliders
+            document.getElementById('healthSlider').value = 7;
+            document.getElementById('npsSlider').value = 7;
+            document.getElementById('engagementSlider').value = 85;
+            updateRiskAssessment();
+        }
+
+        function loadActionItems() {
+            const container = document.getElementById('actionItemsList');
+            const actions = currentClient.actions || [];
+            
+            container.innerHTML = '';
+            
+            if (actions.length === 0) {
+                container.innerHTML = '<p>No action items yet. Add one above!</p>';
+                return;
+            }
+
+            // Sort by creation date (most recent first)
+            actions.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+            actions.forEach((action) => {
+                const actionDiv = document.createElement('div');
+                actionDiv.className = `action-card priority-${action.priority} ${action.completed ? 'action-completed' : ''}`;
+                
+                const dueDateStr = new Date(action.dueDate).toLocaleDateString();
+                const statusText = action.completed ? 'Completed' : 'Pending';
+                const buttonText = action.completed ? 'Reopen' : 'Mark Complete';
+                const buttonClass = action.completed ? 'btn-warning' : 'btn-success';
+                
+                actionDiv.innerHTML = `
+                    <h4>${action.action}</h4>
+                    <p><strong>Priority:</strong> ${action.priority.toUpperCase()}</p>
+                    <p><strong>Due:</strong> ${dueDateStr}</p>
+                    <p><strong>Status:</strong> ${statusText}</p>
+                    <button class="btn ${buttonClass}" onclick="toggleActionComplete('${action.id}')">
+                        ${buttonText}
+                    </button>
+                `;
+                container.appendChild(actionDiv);
+            });
+        }
+
+        function loadRCAProgress() {
+            const container = document.getElementById('rcaActionsList');
+            const rcaItems = currentClient.rca || [];
+            
+            container.innerHTML = '';
+            
+            if (rcaItems.length === 0) {
+                container.innerHTML = '<p>No RCA findings yet. Complete an RCA analysis to see follow-up actions here.</p>';
+                return;
+            }
+
+            // Filter open RCA items and sort by priority
+            const openRcaItems = rcaItems.filter(rca => rca.status !== 'closed');
+            openRcaItems.sort((a, b) => {
+                const priorityOrder = { high: 3, medium: 2, low: 1 };
+                return (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
+            });
+
+            if (openRcaItems.length === 0) {
+                container.innerHTML = '<p>✅ All RCA items have been addressed!</p>';
+                return;
+            }
+
+            openRcaItems.forEach(rca => {
+                const rcaDiv = document.createElement('div');
+                rcaDiv.className = `action-card priority-${rca.priority}`;
+                
+                const timestamp = rca.timestamp ? 
+                    new Date(rca.timestamp).toLocaleDateString() : 
+                    'Recent';
+                
+                rcaDiv.innerHTML = `
+                    <h4>🔍 RCA: ${rca.category.toUpperCase()}</h4>
+                    <p><strong>Issue:</strong> ${rca.description}</p>
+                    ${rca.actionPlan ? `<p><strong>Action Plan:</strong> ${rca.actionPlan}</p>` : ''}
+                    <p><strong>Priority:</strong> ${rca.priority.toUpperCase()}</p>
+                    <p><strong>Created:</strong> ${timestamp}</p>
+                    <div style="margin-top: 15px;">
+                        <button class="btn btn-success" onclick="markRCAComplete('${rca.id}')">Mark Complete</button>
+                        <button class="btn btn-primary" onclick="addRCAUpdate('${rca.id}')">Add Update</button>
+                    </div>
+                `;
+                container.appendChild(rcaDiv);
+            });
+        }
+
+        function loadCommunicationHistory() {
+            const container = document.getElementById('communicationHistory');
+            const communications = currentClient.communications || [];
+            
+            container.innerHTML = '<h5>Communication History:</h5>';
+            
+            if (communications.length === 0) {
+                container.innerHTML += '<p>No communications logged yet.</p>';
+                return;
+            }
+
+            // Sort by timestamp (most recent first)
+            communications.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+            communications.slice(0, 5).forEach(comm => {
+                const commDiv = document.createElement('div');
+                commDiv.className = 'comm-item';
+                
+                const timestamp = comm.timestamp ? 
+                    new Date(comm.timestamp).toLocaleString() : 
+                    'Recent';
+                
+                commDiv.innerHTML = `
+                    <strong>${comm.type.toUpperCase()}</strong> - ${timestamp}
+                    <p>${comm.notes}</p>
+                `;
+                container.appendChild(commDiv);
+            });
+        }
+
+        function loadRCAHistory() {
+            const container = document.getElementById('rcaList');
+            const rcaItems = currentClient.rca || [];
+            
+            container.innerHTML = '';
+            
+            if (rcaItems.length === 0) {
+                container.innerHTML = '<p>No RCA findings yet.</p>';
+                return;
+            }
+
+            // Sort by timestamp (most recent first)
+            rcaItems.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+            rcaItems.slice(0, 3).forEach(rca => {
+                const rcaDiv = document.createElement('div');
+                rcaDiv.className = 'comm-item';
+                
+                const timestamp = rca.timestamp ? 
+                    new Date(rca.timestamp).toLocaleDateString() : 
+                    'Recent';
+                
+                rcaDiv.innerHTML = `
+                    <strong>${rca.category.toUpperCase()}</strong> - ${timestamp}
+                    <p><strong>Issue:</strong> ${rca.description}</p>
+                    ${rca.factors ? `<p><strong>Factors:</strong> ${rca.factors}</p>` : ''}
+                    <p><strong>Status:</strong> ${rca.status || 'Open'}</p>
+                `;
+                container.appendChild(rcaDiv);
+            });
+        }
+
+        function loadTimeline() {
+            const container = document.getElementById('interventionTimeline');
+            const timeline = currentClient.timeline || [];
+            
+            container.innerHTML = '';
+            
+            if (timeline.length === 0) {
+                container.innerHTML = '<p>No timeline events yet.</p>';
+                return;
+            }
+
+            // Sort by timestamp (most recent first)
+            timeline.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+            timeline.slice(0, 10).forEach(item => {
+                const timelineDiv = document.createElement('div');
+                timelineDiv.className = 'timeline-item';
+                
+                const timestamp = item.timestamp ? 
+                    new Date(item.timestamp).toLocaleString() : 
+                    'Recent';
+                
+                timelineDiv.innerHTML = `
+                    <div class="timeline-date">${timestamp}</div>
+                    <h4>${item.title}</h4>
+                    <p>${item.description}</p>
+                `;
+                container.appendChild(timelineDiv);
+            });
+        }
+
+        // Tab switching
+        function showTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.nav-tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // Risk Assessment Functions
+        function updateRiskAssessment() {
+            const healthScore = parseFloat(document.getElementById('healthSlider').value);
+            const npsScore = parseInt(document.getElementById('npsSlider').value);
+            const engagement = parseInt(document.getElementById('engagementSlider').value);
+
+            document.getElementById('healthScore').textContent = healthScore.toFixed(1);
+            document.getElementById('npsScore').textContent = npsScore;
+            document.getElementById('engagementScore').textContent = engagement;
+
+            // Update risk level and recommendations
+            let riskLevel, riskClass, recommendations;
+            
+            if (healthScore < 6) {
+                riskLevel = 'Critical Risk';
+                riskClass = 'critical';
+                recommendations = [
+                    'Executive escalation meeting within 72 hours',
+                    'Daily check-ins with client',
+                    'Dedicated success manager assignment',
+                    'Fast-track any pending requests/issues'
+                ];
+            } else if (healthScore < 7) {
+                riskLevel = 'Moderate Risk';
+                riskClass = 'warning';
+                recommendations = [
+                    'Schedule account health review',
+                    'Analyze usage patterns and feedback',
+                    'Identify specific pain points',
+                    'Create targeted improvement plan'
+                ];
+            } else {
+                riskLevel = 'Low Risk';
+                riskClass = 'success';
+                recommendations = [
+                    'Continue regular monitoring',
+                    'Quarterly business reviews',
+                    'Proactive relationship building',
+                    'Explore expansion opportunities'
+                ];
+            }
+
+            // Update UI
+            const riskLevelElement = document.getElementById('riskLevel');
+            riskLevelElement.textContent = `Risk Level: ${riskLevel}`;
+            riskLevelElement.className = `card-header ${riskClass}`;
+
+            // Update score displays
+            document.getElementById('healthScore').className = `score-display ${riskClass}`;
+            document.getElementById('npsScore').className = `score-display ${npsScore >= 7 ? 'success' : npsScore >= 5 ? 'warning' : 'critical'}`;
+            document.getElementById('engagementScore').className = `score-display ${engagement >= 80 ? 'success' : engagement >= 60 ? 'warning' : 'critical'}`;
+
+            // Update recommendations
+            const recommendationsList = document.getElementById('recommendationsList');
+            recommendationsList.innerHTML = '';
+            recommendations.forEach(rec => {
+                const li = document.createElement('li');
+                li.textContent = rec;
+                recommendationsList.appendChild(li);
+            });
+
+            // Update current client data
+            if (currentClient) {
+                currentClient.healthScore = healthScore;
+                currentClient.npsScore = npsScore;
+                currentClient.engagement = engagement;
+                currentClient.riskLevel = riskClass;
+            }
+        }
+
+        // Progress tracking
+        function updateProgress(section) {
+            const checkboxes = document.querySelectorAll(`.checklist input[type="checkbox"]`);
+            const checked = document.querySelectorAll(`.checklist input[type="checkbox"]:checked`);
+            const percentage = checkboxes.length > 0 ? (checked.length / checkboxes.length) * 100 : 0;
+
+            const progressBar = document.getElementById(`${section}Progress`);
+            if (progressBar) {
+                progressBar.style.width = `${percentage}%`;
+                progressBar.querySelector('.progress-text').textContent = `${Math.round(percentage)}% Complete`;
+            }
+
+            // Update checklist item styling
+            checkboxes.forEach(checkbox => {
+                if (checkbox.checked) {
+                    checkbox.parentElement.classList.add('completed');
+                } else {
+                    checkbox.parentElement.classList.remove('completed');
+                }
+            });
+        }
+
+        // RCA Functions
+        function openRCAMeeting() {
+            document.getElementById('rcaModal').style.display = 'block';
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+
+        // Action Plan Functions
+        function generateActionPlan() {
+            if (!currentClient) {
+                showNotification('Please select a client first', 'error');
+                return;
+            }
+            
+            generateActionItems();
+            showTab('action-plan');
+            showNotification(`Action plan generated for ${currentClient.name}`);
+        }
+
+        function generateActionItems() {
+            const riskLevel = document.getElementById('actionRiskLevel').value;
+            const timeline = document.getElementById('actionTimeline').value;
+            
+            const actionPlans = {
+                critical: {
+                    immediate: [
+                        { action: 'Schedule executive escalation meeting', priority: 'high', days: 1 },
+                        { action: 'Alert all stakeholders', priority: 'high', days: 1 },
+                        { action: 'Prepare retention offer', priority: 'high', days: 2 },
+                        { action: 'Fast-track pending issues', priority: 'high', days: 3 }
+                    ],
+                    short: [
+                        { action: 'Daily client check-ins', priority: 'high', days: 7 },
+                        { action: 'Assign dedicated success manager', priority: 'high', days: 3 },
+                        { action: 'Implement quick wins', priority: 'medium', days: 14 },
+                        { action: 'Weekly stakeholder meetings', priority: 'medium', days: 7 }
+                    ],
+                    medium: [
+                        { action: 'Comprehensive service review', priority: 'medium', days: 30 },
+                        { action: 'Contract renegotiation', priority: 'low', days: 60 },
+                        { action: 'Strategic planning session', priority: 'medium', days: 45 }
+                    ]
+                },
+                moderate: {
+                    immediate: [
+                        { action: 'Schedule account health review', priority: 'high', days: 3 },
+                        { action: 'Analyze usage patterns', priority: 'medium', days: 2 },
+                        { action: 'Contact key stakeholders', priority: 'medium', days: 2 }
+                    ],
+                    short: [
+                        { action: 'Bi-weekly check-ins', priority: 'medium', days: 14 },
+                        { action: 'Address top 3 concerns', priority: 'high', days: 21 },
+                        { action: 'Provide additional training', priority: 'medium', days: 28 }
+                    ],
+                    medium: [
+                        { action: 'Quarterly business reviews', priority: 'low', days: 90 },
+                        { action: 'Relationship building activities', priority: 'low', days: 60 }
+                    ]
+                },
+                low: {
+                    immediate: [
+                        { action: 'Informal check-in call', priority: 'low', days: 7 },
+                        { action: 'Review satisfaction metrics', priority: 'low', days: 5 }
+                    ],
+                    short: [
+                        { action: 'Monthly health reviews', priority: 'low', days: 30 },
+                        { action: 'Explore expansion opportunities', priority: 'low', days: 21 }
+                    ],
+                    medium: [
+                        { action: 'Strategic partnership review', priority: 'low', days: 90 }
+                    ]
+                }
+            };
+
+            const actions = actionPlans[riskLevel][timeline] || [];
+            const container = document.getElementById('actionItemsContainer');
+            container.innerHTML = '';
+
+            actions.forEach((item, index) => {
+                const dueDate = new Date();
+                dueDate.setDate(dueDate.getDate() + item.days);
+                
+                const actionCard = document.createElement('div');
+                actionCard.className = `action-card priority-${item.priority}`;
+                actionCard.innerHTML = `
+                    <h4>${item.action}</h4>
+                    <p><strong>Priority:</strong> ${item.priority.toUpperCase()}</p>
+                    <p><strong>Due:</strong> ${dueDate.toLocaleDateString()}</p>
+                    <div style="margin-top: 15px;">
+                        <button class="btn btn-success" onclick="saveGeneratedAction('${item.action}', '${item.priority}', '${dueDate.toISOString().split('T')[0]}')">Add to Client</button>
+                    </div>
+                `;
+                container.appendChild(actionCard);
+            });
+        }
+
+        async function saveGeneratedAction(action, priority, dueDate) {
+            if (!currentClient) {
+                showNotification('Please select a client first', 'error');
+                return;
+            }
+
+            const actionData = {
+                action,
+                priority,
+                dueDate,
+                completed: false,
+                createdAt: firebase.database.ServerValue.TIMESTAMP
+            };
+
+            try {
+                updateSyncStatus('syncing');
+                const newActionRef = clientsRef.child(currentClient.id).child('actions').push();
+                await newActionRef.set(actionData);
+
+                showNotification('Action added to client successfully!');
+                addToTimeline('Action Added', action, 'action');
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error adding action: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        // Communication Functions
+        function loadTemplate() {
+            const templateType = document.getElementById('templateType').value;
+            const container = document.getElementById('templateContainer');
+            
+            const templates = {
+                initial: {
+                    subject: 'Partnership Check-in - [Client Name]',
+                    body: `Hi [Contact Name],
+
+I hope you're doing well. As part of our commitment to ensuring your success with [Company], I wanted to reach out for a quick check-in.
+
+I've been reviewing our partnership and would love to schedule some time to discuss how things are going from your perspective and explore ways we can better support your objectives.
+
+Would you be available for a 30-minute call this week? I'm flexible on timing and happy to work around your schedule.
+
+Looking forward to connecting,
+[Your Name]`
+                },
+                meeting: {
+                    subject: 'Meeting Request - Account Health Review',
+                    body: `Hi [Contact Name],
+
+I'd like to schedule a brief account health review to ensure we're delivering maximum value and address any areas for improvement.
+
+Agenda:
+• Partnership performance review
+• Current challenges and opportunities  
+• Strategic alignment discussion
+• Next steps planning
+
+Please let me know your availability for a 60-minute meeting in the next week.
+
+Best regards,
+[Your Name]`
+                },
+                followup: {
+                    subject: 'Thank you - Next steps from our conversation',
+                    body: `Hi [Contact Name],
+
+Thank you for taking the time to meet with me yesterday. I really appreciated your candid feedback and the opportunity to discuss how we can improve our partnership.
+
+As we discussed, here are our committed next steps:
+
+• [Action 1] - Due: [Date]
+• [Action 2] - Due: [Date]  
+• [Action 3] - Due: [Date]
+
+I'll follow up on [date] to update you on our progress. In the meantime, please don't hesitate to reach out if you have any questions or concerns.
+
+Best regards,
+[Your Name]`
+                },
+                escalation: {
+                    subject: 'Important: Partnership Discussion - [Client Name]',
+                    body: `Hi [Contact Name],
+
+I hope this message finds you well. I'm reaching out because I want to ensure we're providing you with the best possible experience and addressing any concerns you may have.
+
+I'd appreciate the opportunity to discuss our partnership and understand how we can better support your goals. This is important to us, and I'd like to involve our senior leadership to ensure we're doing everything possible to exceed your expectations.
+
+Could we schedule a call with [Executive Name] and myself? We're committed to resolving any issues and strengthening our partnership.
+
+Thank you for your time and partnership.
+
+[Your Name]
+[Executive Name]`
+                }
+            };
+
+            if (templates[templateType]) {
+                const template = templates[templateType];
+                container.innerHTML = `
+                    <div class="email-template">
+                        <h5>Subject: ${template.subject}</h5>
+                        <div style="margin-top: 15px;">
+                            <strong>Body:</strong>
+                            <pre style="white-space: pre-wrap; font-family: inherit; margin-top: 10px;">${template.body}</pre>
+                        </div>
+                        <button class="copy-btn" onclick="copyToClipboard('${template.subject}\\n\\n${template.body.replace(/'/g, "\\'")}')">Copy Template</button>
+                    </div>
+                `;
+            }
+        }
+
+        function copyTemplate() {
+            const template = document.querySelector('.email-template pre');
+            if (template) {
+                const subject = document.querySelector('.email-template h5').textContent;
+                const fullTemplate = subject + '\n\n' + template.textContent;
+                copyToClipboard(fullTemplate);
+            }
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showNotification('Template copied to clipboard!');
+            });
+        }
+
+        function scheduleEmail() {
+            const templateType = document.getElementById('templateType').value;
+            if (!templateType) {
+                showNotification('Please select a template first', 'error');
+                return;
+            }
+            
+            showNotification('Email template ready for use!');
+            addToTimeline('Email Template Prepared', `${templateType} template ready`, 'communication');
+        }
+
+        // Timeline and Progress Tracking
+        function addTimelineEvent() {
+            const title = prompt('Event Title:');
+            const description = prompt('Event Description:');
+            
+            if (title && description) {
+                addToTimeline(title, description, 'manual');
+                showNotification('Timeline event added!');
+            }
+        }
+
+        async function markAsRecovered() {
+            if (!currentClient) {
+                showNotification('Please select a client first', 'error');
+                return;
+            }
+
+            if (confirm('Mark this client as successfully recovered?')) {
+                try {
+                    updateSyncStatus('syncing');
+                    await clientsRef.child(currentClient.id).update({
+                        status: 'recovered',
+                        recoveryDate: firebase.database.ServerValue.TIMESTAMP,
+                        lastUpdated: firebase.database.ServerValue.TIMESTAMP
+                    });
+
+                    addToTimeline('Client Recovered', 'Intervention successful - client returned to healthy status', 'success');
+                    showNotification('Client marked as recovered! 🎉');
+                    updateSyncStatus('online');
+                } catch (error) {
+                    showNotification('Error updating client status: ' + error.message, 'error');
+                    updateSyncStatus('online');
+                }
+            }
+        }
+
+        async function markAsLost() {
+            if (!currentClient) {
+                showNotification('Please select a client first', 'error');
+                return;
+            }
+
+            if (confirm('Mark this client as lost? This action cannot be undone.')) {
+                try {
+                    updateSyncStatus('syncing');
+                    await clientsRef.child(currentClient.id).update({
+                        status: 'lost',
+                        lostDate: firebase.database.ServerValue.TIMESTAMP,
+                        lastUpdated: firebase.database.ServerValue.TIMESTAMP
+                    });
+
+                    addToTimeline('Client Lost', 'Intervention unsuccessful - client churned', 'failure');
+                    showNotification('Client marked as lost. Please conduct post-mortem analysis.', 'error');
+                    updateSyncStatus('online');
+                } catch (error) {
+                    showNotification('Error updating client status: ' + error.message, 'error');
+                    updateSyncStatus('online');
+                }
+            }
+        }
+
+        function updateMetrics() {
+            const totalActions = actionItems.length;
+            const completedActions = actionItems.filter(a => a.completed).length;
+            const completionRate = totalActions > 0 ? Math.round((completedActions / totalActions) * 100) : 0;
+
+            document.getElementById('totalInterventions').textContent = totalActions;
+            document.getElementById('successRate').textContent = completionRate + '%';
+            
+            // Calculate average recovery time (mock data for demo)
+            const avgDays = Math.floor(Math.random() * 30) + 15;
+            document.getElementById('avgRecoveryTime').textContent = avgDays;
+        }
+
+        // Utility Functions
+        function getRiskClass(healthScore) {
+            if (healthScore < 6) return 'critical';
+            if (healthScore < 7) return 'warning';
+            return 'success';
+        }
+
+        function updateSyncStatus(status) {
+            const syncText = document.getElementById('syncText');
+            const syncStatus = document.getElementById('syncStatus');
+            
+            syncStatus.className = `sync-status sync-${status}`;
+            
+            switch(status) {
+                case 'online':
+                    syncText.textContent = '✅ Real-time Synced';
+                    break;
+                case 'offline':
+                    syncText.textContent = '❌ Offline';
+                    break;
+                case 'syncing':
+                    syncText.textContent = '🔄 Syncing...';
+                    break;
+            }
+        }
+
+        function showNotification(message, type = 'success') {
+            const notification = document.getElementById('notificationToast');
+            const notificationText = document.getElementById('notificationText');
+            
+            notificationText.textContent = message;
+            notification.style.display = 'block';
+            
+            if (type === 'error') {
+                notification.style.background = '#dc3545';
+            } else {
+                notification.style.background = '#28a745';
+            }
+            
+            setTimeout(() => {
+                notification.style.display = 'none';
+            }, 4000);
+        }
+
+        function getTomorrowDate() {
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            return tomorrow.toISOString().split('T')[0];
+        }
+
+        function getDateInDays(days) {
+            const date = new Date();
+            date.setDate(date.getDate() + days);
+            return date.toISOString().split('T')[0];
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // Set default date for action items to tomorrow
+            document.getElementById('customDueDate').value = getTomorrowDate();
+            
+            // Load clients and setup real-time sync
+            loadClients();
+            generateActionItems();
+            updateMetrics();
+            
+            showNotification('Real-time dashboard loaded - all changes sync instantly across devices!');
+        });
+
+        // Handle connection status
+        window.addEventListener('online', () => {
+            updateSyncStatus('online');
+            showNotification('Connection restored - real-time sync active!');
+            if (!clientsListener) {
+                loadClients();
+            }
+        });
+
+        window.addEventListener('offline', () => {
+            updateSyncStatus('offline');
+            showNotification('Connection lost - working offline', 'error');
+        });
+
+        // Database connection monitoring
+        const connectedRef = database.ref('.info/connected');
+        connectedRef.on('value', (snapshot) => {
+            if (snapshot.val() === true) {
+                updateSyncStatus('online');
+            } else {
+                updateSyncStatus('offline');
+            }
+        });
+
+        // Close modals when clicking outside
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal')) {
+                event.target.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>At-Risk Client Intervention Tool</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .main-nav {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 30px;
+            overflow: hidden;
+        }
+
+        .nav-tabs {
+            display: flex;
+            background: #f8f9fa;
+        }
+
+        .nav-tab {
+            flex: 1;
+            padding: 20px;
+            text-align: center;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .nav-tab:hover {
+            background: #e9ecef;
+        }
+
+        .nav-tab.active {
+            background: white;
+            color: #667eea;
+        }
+
+        .nav-tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+            padding: 30px;
+            animation: fadeIn 0.5s ease;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            overflow: hidden;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+        }
+
+        .card-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            font-weight: 600;
+            font-size: 1.2rem;
+        }
+
+        .card-body {
+            padding: 25px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+            margin: 5px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+            color: white;
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+            color: white;
+        }
+
+        .risk-assessment {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .risk-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: transform 0.3s ease;
+        }
+
+        .risk-card:hover {
+            transform: scale(1.05);
+        }
+
+        .risk-card.critical {
+            border-left: 5px solid #ff4b2b;
+        }
+
+        .risk-card.warning {
+            border-left: 5px solid #ffa500;
+        }
+
+        .risk-card.success {
+            border-left: 5px solid #56ab2f;
+        }
+
+        .score-display {
+            font-size: 3rem;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .score-display.critical {
+            color: #ff4b2b;
+        }
+
+        .score-display.warning {
+            color: #ffa500;
+        }
+
+        .score-display.success {
+            color: #56ab2f;
+        }
+
+        .client-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .client-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+
+        .client-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .client-name {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .client-score {
+            font-size: 2rem;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .checklist {
+            list-style: none;
+        }
+
+        .checklist-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            transition: background 0.3s ease;
+        }
+
+        .checklist-item:hover {
+            background: #e9ecef;
+        }
+
+        .checklist-item input[type="checkbox"] {
+            margin-right: 12px;
+            transform: scale(1.2);
+        }
+
+        .checklist-item.completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 15px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: linear-gradient(to bottom, #667eea, #764ba2);
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 30px;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+            margin-left: 20px;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -26px;
+            top: 25px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #667eea;
+            border: 3px solid white;
+            box-shadow: 0 0 0 3px #667eea;
+        }
+
+        .timeline-date {
+            font-size: 0.9rem;
+            color: #6c757d;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 10px;
+            transition: width 0.5s ease;
+            position: relative;
+        }
+
+        .progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-weight: 600;
+            font-size: 0.8rem;
+        }
+
+        .action-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .action-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+            margin-bottom: 15px;
+        }
+
+        .action-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .priority-high {
+            border-left: 5px solid #ff4b2b;
+        }
+
+        .priority-medium {
+            border-left: 5px solid #ffa500;
+        }
+
+        .priority-low {
+            border-left: 5px solid #56ab2f;
+        }
+
+        .action-completed {
+            opacity: 0.6;
+            background: #f8f9fa;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.3s ease;
+        }
+
+        .modal-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 30px;
+            border-radius: 15px;
+            width: 90%;
+            max-width: 600px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: #000;
+        }
+
+        .email-template {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+            border-left: 4px solid #667eea;
+        }
+
+        .copy-btn {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            float: right;
+            margin-top: 10px;
+        }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            display: none;
+            z-index: 1001;
+        }
+
+        .filter-section {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+        }
+
+        .filter-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .metric-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.3);
+        }
+
+        .metric-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        .sync-status {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+            font-size: 0.9rem;
+            z-index: 1000;
+        }
+
+        .sync-online {
+            color: #28a745;
+        }
+
+        .sync-offline {
+            color: #dc3545;
+        }
+
+        .sync-syncing {
+            color: #ffc107;
+        }
+
+        .comm-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #667eea;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚨 At-Risk Client Intervention Tool</h1>
+            <p>Real-time shared dashboard for client recovery and retention</p>
+        </div>
+
+        <!-- Client Selection -->
+        <div class="card">
+            <div class="card-header">
+                👥 Client Management - Shared Dashboard
+            </div>
+            <div class="card-body">
+                <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                    <input type="text" class="form-control" id="newClientName" placeholder="Enter new client name" style="flex: 1;">
+                    <button class="btn btn-primary" onclick="createNewClient()">Add Client</button>
+                    <button class="btn btn-success" onclick="loadClients()">Refresh List</button>
+                </div>
+                
+                <div id="clientsList" class="client-list">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Loading clients...
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="main-nav">
+            <div class="nav-tabs">
+                <button class="nav-tab active" onclick="showTab('assessment')">Risk Assessment</button>
+                <button class="nav-tab" onclick="showTab('rca')">RCA Toolkit</button>
+                <button class="nav-tab" onclick="showTab('action-plan')">Action Plans</button>
+                <button class="nav-tab" onclick="showTab('communication')">Communication</button>
+                <button class="nav-tab" onclick="showTab('tracking')">Progress Tracking</button>
+            </div>
+
+            <!-- Risk Assessment Tab -->
+            <div id="assessment" class="tab-content active">
+                <div class="card">
+                    <div class="card-header">
+                        📊 Client Risk Assessment
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label>Selected Client:</label>
+                            <div id="selectedClientName" style="font-size: 1.2rem; font-weight: bold; color: #667eea;">No client selected</div>
+                        </div>
+                        
+                        <div class="risk-assessment">
+                            <div class="risk-card">
+                                <h4>Health Score</h4>
+                                <div class="score-display" id="healthScore">0.0</div>
+                                <input type="range" min="0" max="10" step="0.1" value="7" id="healthSlider" onchange="updateRiskAssessment()">
+                            </div>
+                            
+                            <div class="risk-card">
+                                <h4>NPS Score</h4>
+                                <div class="score-display" id="npsScore">7</div>
+                                <input type="range" min="0" max="10" step="1" value="7" id="npsSlider" onchange="updateRiskAssessment()">
+                            </div>
+                            
+                            <div class="risk-card">
+                                <h4>Engagement %</h4>
+                                <div class="score-display" id="engagementScore">85</div>
+                                <input type="range" min="0" max="100" step="5" value="85" id="engagementSlider" onchange="updateRiskAssessment()">
+                            </div>
+                        </div>
+
+                        <div class="card" style="margin-top: 20px;">
+                            <div class="card-header" id="riskLevel">Risk Level: Moderate</div>
+                            <div class="card-body">
+                                <div id="riskRecommendations">
+                                    <h5>Recommended Actions:</h5>
+                                    <ul id="recommendationsList">
+                                        <li>Select a client to see recommendations</li>
+                                    </ul>
+                                </div>
+                                <button class="btn btn-primary" onclick="saveClientData()">Save Assessment</button>
+                                <button class="btn btn-success" onclick="generateActionPlan()">Generate Action Plan</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RCA Toolkit Tab -->
+            <div id="rca" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        🔍 Root Cause Analysis Toolkit
+                    </div>
+                    <div class="card-body">
+                        <h4>Pre-Meeting Preparation Checklist</h4>
+                        <ul class="checklist">
+                            <li class="checklist-item">
+                                <input type="checkbox" onchange="updateProgress('prep')">
+                                <span>Gather all client interaction history (emails, calls, meetings)</span>
+                            </li>
+                            <li class="checklist-item">
+                                <input type="checkbox" onchange="updateProgress('prep')">
+                                <span>Review support ticket history and resolution times</span>
+                            </li>
+                            <li class="checklist-item">
+                                <input type="checkbox" onchange="updateProgress('prep')">
+                                <span>Analyze product usage patterns and feature adoption</span>
+                            </li>
+                            <li class="checklist-item">
+                                <input type="checkbox" onchange="updateProgress('prep')">
+                                <span>Check billing history and payment patterns</span>
+                            </li>
+                            <li class="checklist-item">
+                                <input type="checkbox" onchange="updateProgress('prep')">
+                                <span>Review contract terms and renewal dates</span>
+                            </li>
+                            <li class="checklist-item">
+                                <input type="checkbox" onchange="updateProgress('prep')">
+                                <span>Collect team member observations and concerns</span>
+                            </li>
+                        </ul>
+
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="prepProgress" style="width: 0%">
+                                <div class="progress-text">0% Complete</div>
+                            </div>
+                        </div>
+
+                        <button class="btn btn-primary" onclick="openRCAMeeting()" style="margin-top: 20px;">Start RCA Meeting</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        📝 RCA Analysis Framework
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label>Primary Issue Category:</label>
+                            <select class="form-control" id="issueCategory" onchange="showRCARecommendations()">
+                                <option value="">Select category...</option>
+                                <option value="product">Product/Service Issues</option>
+                                <option value="relationship">Relationship Factors</option>
+                                <option value="external">External Factors</option>
+                                <option value="internal">Internal Factors</option>
+                            </select>
+                        </div>
+
+                        <!-- RCA Recommendations -->
+                        <div id="rcaRecommendations" style="display: none; margin-bottom: 20px;">
+                            <div class="card" style="background: #f8f9fa; border: 1px solid #dee2e6;">
+                                <div class="card-body" style="padding: 15px;">
+                                    <h5>💡 Recommended RCA Actions for <span id="rcaCategory"></span>:</h5>
+                                    <div id="rcaActionRecommendations"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Issue Description:</label>
+                            <textarea class="form-control" id="issueDescription" rows="4" placeholder="Describe the main issues identified..."></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Contributing Factors:</label>
+                            <textarea class="form-control" id="contributingFactors" rows="3" placeholder="List all contributing factors..."></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Action Plan:</label>
+                            <textarea class="form-control" id="rcaActionPlan" rows="3" placeholder="What actions will be taken to address this?"></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Priority Level:</label>
+                            <select class="form-control" id="rcaPriority">
+                                <option value="high">High - Immediate Action Required</option>
+                                <option value="medium">Medium - Address within 1-2 weeks</option>
+                                <option value="low">Low - Monitor and review</option>
+                            </select>
+                        </div>
+
+                        <button class="btn btn-success" onclick="saveRCAFindings()">Save RCA & Generate Action Plan</button>
+                        
+                        <div id="rcaHistory" style="margin-top: 20px;">
+                            <h5>RCA History:</h5>
+                            <div id="rcaList"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Plans Tab -->
+            <div id="action-plan" class="tab-content">
+                <div class="filter-section">
+                    <h4>Action Plan Generator</h4>
+                    <div class="filter-grid">
+                        <div>
+                            <label>Risk Level:</label>
+                            <select class="form-control" id="actionRiskLevel" onchange="generateActionItems()">
+                                <option value="critical">Critical (Score < 6)</option>
+                                <option value="moderate">Moderate (Score 6-7)</option>
+                                <option value="low">Low (Score 7+)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Timeline:</label>
+                            <select class="form-control" id="actionTimeline" onchange="generateActionItems()">
+                                <option value="immediate">Immediate (24-48 hours)</option>
+                                <option value="short">Short-term (1-4 weeks)</option>
+                                <option value="medium">Medium-term (1-3 months)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="action-grid" id="actionItemsContainer">
+                    <!-- Action items will be generated here -->
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <div class="card-header">
+                        📋 Custom Action Items
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label>Custom Action:</label>
+                            <input type="text" class="form-control" id="customAction" placeholder="Enter custom action item">
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <select class="form-control" id="customPriority" style="flex: 1;">
+                                <option value="high">High Priority</option>
+                                <option value="medium">Medium Priority</option>
+                                <option value="low">Low Priority</option>
+                            </select>
+                            <input type="date" class="form-control" id="customDueDate" style="flex: 1;">
+                            <button class="btn btn-primary" onclick="addCustomAction()">Add Action</button>
+                        </div>
+                        <div id="actionItemsList" style="margin-top: 20px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Communication Tab -->
+            <div id="communication" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        📧 Communication Templates
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label>Template Type:</label>
+                            <select class="form-control" id="templateType" onchange="loadTemplate()">
+                                <option value="">Select template...</option>
+                                <option value="initial">Initial Outreach</option>
+                                <option value="meeting">Meeting Request</option>
+                                <option value="followup">Follow-up</option>
+                                <option value="escalation">Escalation</option>
+                            </select>
+                        </div>
+
+                        <div id="templateContainer">
+                            <!-- Templates will be loaded here -->
+                        </div>
+
+                        <button class="btn btn-primary" onclick="scheduleEmail()">Schedule Email</button>
+                        <button class="btn btn-success" onclick="copyTemplate()">Copy Template</button>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        📞 Communication Log
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label>Communication Type:</label>
+                            <select class="form-control" id="commType">
+                                <option value="email">Email</option>
+                                <option value="call">Phone Call</option>
+                                <option value="meeting">Meeting</option>
+                                <option value="message">Message</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Notes:</label>
+                            <textarea class="form-control" id="commNotes" rows="3" placeholder="Communication notes..."></textarea>
+                        </div>
+                        <button class="btn btn-primary" onclick="logCommunication()">Log Communication</button>
+                        <div id="communicationHistory" style="margin-top: 20px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Progress Tracking Tab -->
+            <div id="tracking" class="tab-content">
+                <div class="card">
+                    <div class="card-header">
+                        📈 Progress Tracking & RCA Follow-up
+                    </div>
+                    <div class="card-body">
+                        <!-- RCA Progress Section -->
+                        <div id="rcaProgressSection" style="margin-bottom: 30px;">
+                            <h4>🔍 RCA Follow-up Actions</h4>
+                            <div id="rcaActionsList"></div>
+                        </div>
+
+                        <div class="risk-assessment">
+                            <div class="metric-card">
+                                <div class="metric-value" id="totalInterventions">0</div>
+                                <div class="metric-label">Active Interventions</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-value" id="successRate">0%</div>
+                                <div class="metric-label">Success Rate</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="
