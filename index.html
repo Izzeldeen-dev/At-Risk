@@ -1338,50 +1338,163 @@
         // Update RCA Tracking
         function updateRCATracking() {
             const trackingContainer = document.getElementById('rcaTrackingList');
-            const openRCAs = rcaFindings.filter(rca => rca.status === 'open');
             
-            if (openRCAs.length === 0) {
-                trackingContainer.innerHTML = '<p>No active RCA items to track. All issues have been resolved! 🎉</p>';
+            if (!rcaFindings || rcaFindings.length === 0) {
+                trackingContainer.innerHTML = '<p>No RCA items found. Complete an RCA analysis to start tracking progress.</p>';
                 return;
             }
 
-            trackingContainer.innerHTML = '';
+            const openRCAs = rcaFindings.filter(rca => rca.status === 'open' || !rca.status);
+            const completedRCAs = rcaFindings.filter(rca => rca.status === 'completed');
             
+            trackingContainer.innerHTML = '';
+
+            // Add summary stats first
+            const statsDiv = document.createElement('div');
+            statsDiv.className = 'card';
+            statsDiv.innerHTML = `
+                <div class="card-header">📊 RCA Summary</div>
+                <div class="card-body" style="display: flex; justify-content: space-around; text-align: center; flex-wrap: wrap;">
+                    <div style="min-width: 120px; margin: 10px;">
+                        <div style="font-size: 2rem; font-weight: bold; color: #ff4b2b;">${openRCAs.filter(r => r.priority === 'high').length}</div>
+                        <div>High Priority</div>
+                    </div>
+                    <div style="min-width: 120px; margin: 10px;">
+                        <div style="font-size: 2rem; font-weight: bold; color: #ffa500;">${openRCAs.filter(r => r.priority === 'medium').length}</div>
+                        <div>Medium Priority</div>
+                    </div>
+                    <div style="min-width: 120px; margin: 10px;">
+                        <div style="font-size: 2rem; font-weight: bold; color: #28a745;">${openRCAs.filter(r => r.priority === 'low').length}</div>
+                        <div>Low Priority</div>
+                    </div>
+                    <div style="min-width: 120px; margin: 10px;">
+                        <div style="font-size: 2rem; font-weight: bold; color: #667eea;">${completedRCAs.length}</div>
+                        <div>Completed</div>
+                    </div>
+                    <div style="min-width: 120px; margin: 10px;">
+                        <div style="font-size: 2rem; font-weight: bold; color: #333;">${rcaFindings.length}</div>
+                        <div>Total RCAs</div>
+                    </div>
+                </div>
+            `;
+            trackingContainer.appendChild(statsDiv);
+
+            if (openRCAs.length === 0) {
+                const noActiveDiv = document.createElement('div');
+                noActiveDiv.className = 'card';
+                noActiveDiv.innerHTML = `
+                    <div class="card-body" style="text-align: center; padding: 40px;">
+                        <h3 style="color: #28a745;">🎉 All RCA items have been resolved!</h3>
+                        <p>Great work! All identified issues have been addressed.</p>
+                    </div>
+                `;
+                trackingContainer.appendChild(noActiveDiv);
+                return;
+            }
+
             // Sort by priority and date
             openRCAs.sort((a, b) => {
                 const priorityOrder = { high: 3, medium: 2, low: 1 };
-                return (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
+                const priorityDiff = (priorityOrder[b.priority] || 0) - (priorityOrder[a.priority] || 0);
+                if (priorityDiff !== 0) return priorityDiff;
+                return (b.timestamp || 0) - (a.timestamp || 0);
             });
+
+            // Add section header for active RCAs
+            const activeHeaderDiv = document.createElement('div');
+            activeHeaderDiv.innerHTML = `<h4 style="margin: 20px 0 15px 0; color: #333;">🔄 Active RCA Items (${openRCAs.length})</h4>`;
+            trackingContainer.appendChild(activeHeaderDiv);
 
             openRCAs.forEach(rca => {
                 const trackingCard = document.createElement('div');
                 trackingCard.className = 'card';
                 trackingCard.style.marginBottom = '15px';
                 
-                const daysSinceCreated = Math.floor((new Date() - rca.timestamp) / (1000 * 60 * 60 * 24));
+                // Calculate days since created
+                let daysSinceCreated = 'Recently';
+                if (rca.timestamp) {
+                    const now = new Date();
+                    const created = new Date(rca.timestamp);
+                    const diffTime = Math.abs(now - created);
+                    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                    daysSinceCreated = diffDays === 0 ? 'Today' : `${diffDays} days ago`;
+                }
+
+                // Calculate action progress
+                const recommendations = rca.recommendations || [];
+                const selectedActions = rca.selectedActions ? Object.values(rca.selectedActions).filter(Boolean).length : 0;
+                const completedActions = rca.actionStatus ? Object.values(rca.actionStatus).filter(action => action && action.completed).length : 0;
+                const customActions = rca.customActions ? Object.keys(rca.customActions).length : 0;
+                const completedCustomActions = rca.customActions ? Object.values(rca.customActions).filter(action => action.completed).length : 0;
+                
+                const totalSelectedActions = selectedActions + customActions;
+                const totalCompletedActions = completedActions + completedCustomActions;
+                const progressPercentage = totalSelectedActions > 0 ? Math.round((totalCompletedActions / totalSelectedActions) * 100) : 0;
+
+                // Get latest update
+                let latestUpdate = null;
+                if (rca.updates && Object.keys(rca.updates).length > 0) {
+                    const updates = Object.values(rca.updates);
+                    latestUpdate = updates[updates.length - 1];
+                }
                 
                 trackingCard.innerHTML = `
                     <div class="card-header" style="background: linear-gradient(135deg, ${getPriorityColor(rca.priority)} 0%, ${getPriorityColor(rca.priority, true)} 100%);">
-                        ${rcaCategories[rca.category].icon} ${rca.categoryName} - ${rca.subcategoryName}
-                        <span style="float: right; font-size: 0.9rem;">Created ${daysSinceCreated} days ago</span>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>${rcaCategories[rca.category]?.icon || '🔍'} ${rca.categoryName} - ${rca.subcategoryName}</span>
+                            <span style="font-size: 0.9rem;">${daysSinceCreated}</span>
+                        </div>
                     </div>
                     <div class="card-body" style="padding: 15px;">
-                        <div style="margin-bottom: 10px;">
+                        <div style="margin-bottom: 15px;">
                             <strong>Issue:</strong> ${rca.description}
                         </div>
-                        <div style="margin-bottom: 10px;">
+                        <div style="margin-bottom: 15px;">
                             <strong>Priority:</strong> <span class="priority-badge priority-${rca.priority}">${rca.priority.toUpperCase()}</span>
                         </div>
-                        ${rca.updates && rca.updates.length > 0 ? `
-                            <div style="margin-bottom: 10px;">
-                                <strong>Latest Update:</strong> ${rca.updates[rca.updates.length - 1].update}
-                                <small style="color: #666;"> (${rca.updates[rca.updates.length - 1].date.toLocaleDateString()})</small>
+                        
+                        <!-- Action Progress -->
+                        <div style="margin-bottom: 15px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                <strong>Action Progress:</strong>
+                                <span style="font-weight: bold; color: ${progressPercentage === 100 ? '#28a745' : '#666'};">${totalCompletedActions}/${totalSelectedActions} completed (${progressPercentage}%)</span>
+                            </div>
+                            <div style="background: #e9ecef; border-radius: 10px; height: 8px; overflow: hidden;">
+                                <div style="background: linear-gradient(135deg, #28a745 0%, #56ab2f 100%); height: 100%; width: ${progressPercentage}%; transition: width 0.3s ease;"></div>
+                            </div>
+                            <div style="font-size: 0.9rem; color: #666; margin-top: 5px;">
+                                Selected: ${selectedActions} recommended + ${customActions} custom actions
+                            </div>
+                        </div>
+                        
+                        ${latestUpdate ? `
+                            <div style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; border-left: 3px solid #667eea;">
+                                <strong>Latest Update:</strong> ${latestUpdate.update}
+                                <br><small style="color: #666;">${new Date(latestUpdate.date).toLocaleDateString()}</small>
                             </div>
                         ` : ''}
+                        
+                        <!-- Action Items Breakdown -->
+                        ${totalSelectedActions > 0 ? `
+                            <div style="margin-bottom: 15px;">
+                                <strong>Action Breakdown:</strong>
+                                <div style="display: flex; gap: 15px; margin-top: 5px; font-size: 0.9rem;">
+                                    <span>✅ Completed: ${totalCompletedActions}</span>
+                                    <span>⏳ Pending: ${totalSelectedActions - totalCompletedActions}</span>
+                                    ${selectedActions > 0 ? `<span>💡 Recommended: ${completedActions}/${selectedActions}</span>` : ''}
+                                    ${customActions > 0 ? `<span>📝 Custom: ${completedCustomActions}/${customActions}</span>` : ''}
+                                </div>
+                            </div>
+                        ` : `
+                            <div style="margin-bottom: 15px; padding: 10px; background: #fff3cd; border-radius: 5px; border-left: 3px solid #ffc107;">
+                                <strong>⚠️ No actions selected yet.</strong> Go to Action Plans tab to select recommended actions or add custom ones.
+                            </div>
+                        `}
                         
                         <div style="margin-top: 15px;">
                             <button class="btn btn-success" onclick="markRCAComplete('${rca.id}')" style="font-size: 0.9rem; padding: 8px 16px;">Mark Complete</button>
                             <button class="btn btn-primary" onclick="addRCAUpdate('${rca.id}')" style="font-size: 0.9rem; padding: 8px 16px;">Add Update</button>
+                            <button class="btn" onclick="goToActionPlan('${rca.id}')" style="background: #667eea; color: white; font-size: 0.9rem; padding: 8px 16px;">View Actions</button>
                         </div>
                     </div>
                 `;
@@ -1389,32 +1502,73 @@
                 trackingContainer.appendChild(trackingCard);
             });
 
-            // Add summary stats
-            const statsDiv = document.createElement('div');
-            statsDiv.className = 'card';
-            statsDiv.innerHTML = `
-                <div class="card-header">📊 RCA Summary</div>
-                <div class="card-body" style="display: flex; justify-content: space-around; text-align: center;">
-                    <div>
-                        <div style="font-size: 2rem; font-weight: bold; color: #ff4b2b;">${openRCAs.filter(r => r.priority === 'high').length}</div>
-                        <div>High Priority</div>
+            // Show completed RCAs if any
+            if (completedRCAs.length > 0) {
+                const completedHeaderDiv = document.createElement('div');
+                completedHeaderDiv.innerHTML = `
+                    <h4 style="margin: 30px 0 15px 0; color: #28a745;">✅ Completed RCA Items (${completedRCAs.length})</h4>
+                    <div style="margin-bottom: 15px;">
+                        <button id="toggleCompleted" class="btn" style="background: #f8f9fa; color: #666; padding: 8px 16px; font-size: 0.9rem;" onclick="toggleCompletedRCAs()">Show Completed Items</button>
                     </div>
-                    <div>
-                        <div style="font-size: 2rem; font-weight: bold; color: #ffa500;">${openRCAs.filter(r => r.priority === 'medium').length}</div>
-                        <div>Medium Priority</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 2rem; font-weight: bold; color: #28a745;">${openRCAs.filter(r => r.priority === 'low').length}</div>
-                        <div>Low Priority</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 2rem; font-weight: bold; color: #667eea;">${rcaFindings.filter(r => r.status === 'completed').length}</div>
-                        <div>Completed</div>
-                    </div>
-                </div>
-            `;
+                `;
+                trackingContainer.appendChild(completedHeaderDiv);
+
+                const completedContainer = document.createElement('div');
+                completedContainer.id = 'completedRCAsContainer';
+                completedContainer.style.display = 'none';
+                
+                completedRCAs.slice(0, 5).forEach(rca => {
+                    const completedCard = document.createElement('div');
+                    completedCard.className = 'card';
+                    completedCard.style.marginBottom = '10px';
+                    completedCard.style.opacity = '0.8';
+                    
+                    const completedDate = rca.completedDate ? new Date(rca.completedDate).toLocaleDateString() : 'Recently';
+                    
+                    completedCard.innerHTML = `
+                        <div class="card-header" style="background: linear-gradient(135deg, #28a745 0%, #56ab2f 100%); color: white;">
+                            ${rcaCategories[rca.category]?.icon || '🔍'} ${rca.categoryName} - ${rca.subcategoryName}
+                            <span style="float: right; font-size: 0.9rem;">Completed: ${completedDate}</span>
+                        </div>
+                        <div class="card-body" style="padding: 15px;">
+                            <div>${rca.description}</div>
+                        </div>
+                    `;
+                    
+                    completedContainer.appendChild(completedCard);
+                });
+                
+                trackingContainer.appendChild(completedContainer);
+            }
+        }
+
+        // Toggle completed RCAs visibility
+        function toggleCompletedRCAs() {
+            const container = document.getElementById('completedRCAsContainer');
+            const button = document.getElementById('toggleCompleted');
             
-            trackingContainer.appendChild(statsDiv);
+            if (container.style.display === 'none') {
+                container.style.display = 'block';
+                button.textContent = 'Hide Completed Items';
+            } else {
+                container.style.display = 'none';
+                button.textContent = 'Show Completed Items';
+            }
+        }
+
+        // Go to action plan for specific RCA
+        function goToActionPlan(rcaId) {
+            showTab('action-plan');
+            document.querySelector('[onclick="showTab(\'action-plan\')"]').classList.add('active');
+            document.querySelector('[onclick="showTab(\'tracking\')"]').classList.remove('active');
+            
+            // Scroll to the specific RCA
+            setTimeout(() => {
+                const rcaElement = document.querySelector(`[id*="${rcaId}"]`);
+                if (rcaElement) {
+                    rcaElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }, 100);
         }
 
         // Utility Functions
