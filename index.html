@@ -971,17 +971,71 @@
                             ${(rcaData.recommendations || []).map((rec, index) => `
                                 <div class="action-recommendation" style="margin-bottom: 10px;">
                                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                                        <span>
-                                            <input type="checkbox" id="action-${rcaData.id}-${index}" style="margin-right: 10px;" onchange="updateActionStatus('${rcaData.id}', ${index})">
-                                            ${rec.action}
+                                        <span style="display: flex; align-items: center;">
+                                            <input type="checkbox" id="select-${rcaData.id}-${index}" style="margin-right: 10px;" onchange="toggleActionSelection('${rcaData.id}', ${index})" ${rcaData.selectedActions && rcaData.selectedActions[index] ? 'checked' : ''}>
+                                            <span style="margin-right: 10px;">Select</span>
+                                            <span>${rec.action}</span>
                                         </span>
                                         <span class="priority-badge priority-${rec.priority}">${rec.priority.toUpperCase()}</span>
                                     </div>
                                     <div style="margin-top: 5px; font-size: 0.9rem; color: #666;">
                                         Due: ${getActionDueDate(rec.priority)}
                                     </div>
+                                    ${rcaData.selectedActions && rcaData.selectedActions[index] ? `
+                                        <div style="margin-top: 10px; padding: 10px; background: #e8f5e8; border-radius: 5px; border-left: 3px solid #28a745;">
+                                            <div style="display: flex; align-items: center; justify-content: space-between;">
+                                                <span>
+                                                    <input type="checkbox" id="complete-${rcaData.id}-${index}" style="margin-right: 10px;" onchange="toggleActionCompletion('${rcaData.id}', ${index})" ${rcaData.actionStatus && rcaData.actionStatus[index] && rcaData.actionStatus[index].completed ? 'checked' : ''}>
+                                                    <span>Mark as Complete</span>
+                                                </span>
+                                                ${rcaData.actionStatus && rcaData.actionStatus[index] && rcaData.actionStatus[index].completed ? '<span style="color: #28a745; font-weight: bold;">✅ Completed</span>' : '<span style="color: #666;">Pending</span>'}
+                                            </div>
+                                        </div>
+                                    ` : ''}
                                 </div>
                             `).join('')}
+                        </div>
+                        
+                        <!-- Custom Actions Section -->
+                        <div style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #eee;">
+                            <h5 style="margin-bottom: 15px;">Custom Actions:</h5>
+                            
+                            <!-- Add New Custom Action -->
+                            <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                                    <input type="text" id="custom-action-${rcaData.id}" placeholder="Enter custom action..." style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                                    <select id="custom-priority-${rcaData.id}" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                                        <option value="high">High Priority</option>
+                                        <option value="medium">Medium Priority</option>
+                                        <option value="low">Low Priority</option>
+                                    </select>
+                                </div>
+                                <div style="display: flex; gap: 10px;">
+                                    <input type="date" id="custom-due-${rcaData.id}" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                                    <button class="btn btn-primary" onclick="addCustomAction('${rcaData.id}')" style="padding: 8px 16px; font-size: 0.9rem;">Add Custom Action</button>
+                                </div>
+                            </div>
+                            
+                            <!-- Display Custom Actions -->
+                            <div id="custom-actions-${rcaData.id}">
+                                ${(rcaData.customActions || []).map((action, index) => `
+                                    <div class="action-recommendation" style="margin-bottom: 10px; background: #fff3cd; border-left: 3px solid #ffc107;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <span style="display: flex; align-items: center;">
+                                                <input type="checkbox" id="complete-custom-${rcaData.id}-${index}" style="margin-right: 10px;" onchange="toggleCustomActionCompletion('${rcaData.id}', ${index})" ${action.completed ? 'checked' : ''}>
+                                                <span>${action.action}</span>
+                                            </span>
+                                            <div>
+                                                <span class="priority-badge priority-${action.priority}">${action.priority.toUpperCase()}</span>
+                                                <button onclick="deleteCustomAction('${rcaData.id}', ${index})" style="margin-left: 10px; background: #dc3545; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer;">×</button>
+                                            </div>
+                                        </div>
+                                        <div style="margin-top: 5px; font-size: 0.9rem; color: #666;">
+                                            Due: ${new Date(action.dueDate).toLocaleDateString()} | Status: ${action.completed ? '<span style="color: #28a745; font-weight: bold;">Completed</span>' : '<span style="color: #ffc107; font-weight: bold;">Pending</span>'}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
                         </div>
                         
                         <div style="margin-top: 20px;">
@@ -1007,11 +1061,28 @@
             });
         }
 
-        // Update Action Status
-        async function updateActionStatus(rcaId, actionIndex) {
+        // Toggle Action Selection
+        async function toggleActionSelection(rcaId, actionIndex) {
             try {
                 updateSyncStatus('syncing');
-                const checkbox = document.getElementById(`action-${rcaId}-${actionIndex}`);
+                const checkbox = document.getElementById(`select-${rcaId}-${actionIndex}`);
+                const selected = checkbox.checked;
+                
+                await rcaRef.child(rcaId).child('selectedActions').child(actionIndex.toString()).set(selected);
+                
+                showNotification(selected ? 'Action selected for implementation!' : 'Action deselected');
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error updating action selection: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        // Toggle Action Completion
+        async function toggleActionCompletion(rcaId, actionIndex) {
+            try {
+                updateSyncStatus('syncing');
+                const checkbox = document.getElementById(`complete-${rcaId}-${actionIndex}`);
                 const completed = checkbox.checked;
                 
                 await rcaRef.child(rcaId).child('actionStatus').child(actionIndex.toString()).set({
@@ -1024,6 +1095,111 @@
             } catch (error) {
                 showNotification('Error updating action status: ' + error.message, 'error');
                 updateSyncStatus('online');
+            }
+        }
+
+        // Add Custom Action
+        async function addCustomAction(rcaId) {
+            const actionInput = document.getElementById(`custom-action-${rcaId}`);
+            const prioritySelect = document.getElementById(`custom-priority-${rcaId}`);
+            const dueDateInput = document.getElementById(`custom-due-${rcaId}`);
+            
+            const action = actionInput.value.trim();
+            const priority = prioritySelect.value;
+            const dueDate = dueDateInput.value;
+            
+            if (!action) {
+                showNotification('Please enter an action description', 'error');
+                return;
+            }
+            
+            if (!dueDate) {
+                showNotification('Please select a due date', 'error');
+                return;
+            }
+            
+            const customAction = {
+                action: action,
+                priority: priority,
+                dueDate: dueDate,
+                completed: false,
+                createdAt: firebase.database.ServerValue.TIMESTAMP
+            };
+            
+            try {
+                updateSyncStatus('syncing');
+                const customActionsRef = rcaRef.child(rcaId).child('customActions');
+                await customActionsRef.push(customAction);
+                
+                // Clear form
+                actionInput.value = '';
+                dueDateInput.value = '';
+                
+                showNotification('Custom action added successfully!');
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error adding custom action: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        // Toggle Custom Action Completion
+        async function toggleCustomActionCompletion(rcaId, actionIndex) {
+            try {
+                updateSyncStatus('syncing');
+                const checkbox = document.getElementById(`complete-custom-${rcaId}-${actionIndex}`);
+                const completed = checkbox.checked;
+                
+                // Get current custom actions array
+                const snapshot = await rcaRef.child(rcaId).child('customActions').once('value');
+                const customActions = snapshot.val();
+                
+                if (customActions) {
+                    const actionKeys = Object.keys(customActions);
+                    const actionKey = actionKeys[actionIndex];
+                    
+                    if (actionKey) {
+                        await rcaRef.child(rcaId).child('customActions').child(actionKey).update({
+                            completed: completed,
+                            completedDate: completed ? firebase.database.ServerValue.TIMESTAMP : null
+                        });
+                        
+                        showNotification(completed ? 'Custom action completed!' : 'Custom action reopened');
+                    }
+                }
+                
+                updateSyncStatus('online');
+            } catch (error) {
+                showNotification('Error updating custom action: ' + error.message, 'error');
+                updateSyncStatus('online');
+            }
+        }
+
+        // Delete Custom Action
+        async function deleteCustomAction(rcaId, actionIndex) {
+            if (confirm('Are you sure you want to delete this custom action?')) {
+                try {
+                    updateSyncStatus('syncing');
+                    
+                    // Get current custom actions array
+                    const snapshot = await rcaRef.child(rcaId).child('customActions').once('value');
+                    const customActions = snapshot.val();
+                    
+                    if (customActions) {
+                        const actionKeys = Object.keys(customActions);
+                        const actionKey = actionKeys[actionIndex];
+                        
+                        if (actionKey) {
+                            await rcaRef.child(rcaId).child('customActions').child(actionKey).remove();
+                            showNotification('Custom action deleted');
+                        }
+                    }
+                    
+                    updateSyncStatus('online');
+                } catch (error) {
+                    showNotification('Error deleting custom action: ' + error.message, 'error');
+                    updateSyncStatus('online');
+                }
             }
         }
 
